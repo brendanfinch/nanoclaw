@@ -29,6 +29,8 @@ vi.mock('../logger.js', () => ({
 type Handler = (...args: any[]) => any;
 
 const clientRef = vi.hoisted(() => ({ current: null as any }));
+// Number of login() calls that should reject (simulates DNS/network failure at boot)
+const loginState = vi.hoisted(() => ({ failuresRemaining: 0, calls: 0 }));
 
 vi.mock('discord.js', () => {
   const Events = {
@@ -65,6 +67,11 @@ vi.mock('discord.js', () => {
     }
 
     async login(_token: string) {
+      loginState.calls++;
+      if (loginState.failuresRemaining > 0) {
+        loginState.failuresRemaining--;
+        throw new Error('getaddrinfo ENOTFOUND discord.com');
+      }
       this._ready = true;
       // Fire the ready event
       const readyHandlers = this.eventHandlers.get('ready') || [];
@@ -100,7 +107,13 @@ vi.mock('discord.js', () => {
   };
 });
 
-import { DiscordChannel, DiscordChannelOpts } from './discord.js';
+import {
+  DiscordChannel,
+  DiscordChannelOpts,
+  DISCORD_LOGIN_RETRY_BASE_MS,
+  DISCORD_LOGIN_RETRY_MAX_MS,
+  DISCORD_LOGIN_BLOCKING_ATTEMPTS,
+} from './discord.js';
 
 // --- Test helpers ---
 
@@ -193,6 +206,8 @@ async function triggerMessage(message: any) {
 describe('DiscordChannel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    loginState.failuresRemaining = 0;
+    loginState.calls = 0;
   });
 
   afterEach(() => {
@@ -231,6 +246,75 @@ describe('DiscordChannel', () => {
 
       await channel.disconnect();
       expect(channel.isConnected()).toBe(false);
+    });
+
+    it('retries login after a transient failure and then connects', async () => {
+      vi.useFakeTimers();
+      loginState.failuresRemaining = 1;
+      loginState.calls = 0;
+      const channel = new DiscordChannel('test-token', createTestOpts());
+
+      const connectPromise = channel.connect();
+      await vi.advanceTimersByTimeAsync(DISCORD_LOGIN_RETRY_BASE_MS);
+      await connectPromise;
+
+      expect(loginState.calls).toBe(2);
+      expect(channel.isConnected()).toBe(true);
+      vi.useRealTimers();
+    });
+
+    it('stops blocking startup after repeated failures but keeps retrying', async () => {
+      vi.useFakeTimers();
+      loginState.failuresRemaining = 100;
+      loginState.calls = 0;
+      const channel = new DiscordChannel('test-token', createTestOpts());
+
+      let resolved = false;
+      const connectPromise = channel.connect().then(() => {
+        resolved = true;
+      });
+      // Drain the blocking attempts: 5s + 10s + 20s + 40s (+ the 5th attempt)
+      await vi.advanceTimersByTimeAsync(5_000 + 10_000 + 20_000 + 40_000);
+      await connectPromise;
+
+      expect(resolved).toBe(true);
+      expect(channel.isConnected()).toBe(false);
+      expect(loginState.calls).toBe(DISCORD_LOGIN_BLOCKING_ATTEMPTS);
+
+      // Background retries continue at the capped interval
+      await vi.advanceTimersByTimeAsync(DISCORD_LOGIN_RETRY_MAX_MS);
+      expect(loginState.calls).toBe(DISCORD_LOGIN_BLOCKING_ATTEMPTS + 1);
+
+      // Network comes back: next retry succeeds
+      loginState.failuresRemaining = 0;
+      await vi.advanceTimersByTimeAsync(DISCORD_LOGIN_RETRY_MAX_MS);
+      expect(channel.isConnected()).toBe(true);
+
+      await channel.disconnect();
+      vi.useRealTimers();
+    });
+
+    it('disconnect() cancels pending login retries', async () => {
+      vi.useFakeTimers();
+      loginState.failuresRemaining = 100;
+      loginState.calls = 0;
+      const channel = new DiscordChannel('test-token', createTestOpts());
+
+      let resolved = false;
+      const connectPromise = channel.connect().then(() => {
+        resolved = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(loginState.calls).toBe(1);
+      expect(resolved).toBe(false);
+
+      await channel.disconnect();
+      await connectPromise; // connect() must not hang after disconnect
+      expect(resolved).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(10 * DISCORD_LOGIN_RETRY_MAX_MS);
+      expect(loginState.calls).toBe(1);
+      vi.useRealTimers();
     });
 
     it('isConnected() returns false before connect', () => {

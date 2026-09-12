@@ -23,10 +23,21 @@ export interface DiscordChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+// Login can fail transiently — most often DNS is not up yet when launchd
+// starts NanoClaw at boot (getaddrinfo ENOTFOUND discord.com). Retry with
+// exponential backoff. After DISCORD_LOGIN_BLOCKING_ATTEMPTS failures,
+// connect() resolves anyway so the scheduler and other channels still start,
+// and retries continue in the background until the gateway comes up.
+export const DISCORD_LOGIN_RETRY_BASE_MS = 5_000;
+export const DISCORD_LOGIN_RETRY_MAX_MS = 60_000;
+export const DISCORD_LOGIN_BLOCKING_ATTEMPTS = 5;
+
 export class DiscordChannel implements Channel {
   name = 'discord';
 
   private client: Client | null = null;
+  private loginRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private settleConnect: (() => void) | null = null;
   private opts: DiscordChannelOpts;
   private botToken: string;
 
@@ -36,6 +47,65 @@ export class DiscordChannel implements Channel {
   }
 
   async connect(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const settle = () => {
+        if (!settled) {
+          settled = true;
+          this.settleConnect = null;
+          resolve();
+        }
+      };
+      this.settleConnect = settle;
+
+      const attemptLogin = (attempt: number) => {
+        this.loginRetryTimer = null;
+        // discord.js destroys the client when login fails, so build a fresh one.
+        const client = this.createClient();
+        client.once(Events.ClientReady, (readyClient) => {
+          logger.info(
+            { username: readyClient.user.tag, id: readyClient.user.id },
+            'Discord bot connected',
+          );
+          console.log(`\n  Discord bot: ${readyClient.user.tag}`);
+          console.log(
+            `  Use /chatid command or check channel IDs in Discord settings\n`,
+          );
+          settle();
+        });
+
+        client.login(this.botToken).catch((err: Error) => {
+          if (this.client !== client) {
+            settle(); // disconnect() was called mid-login; don't hang the caller
+            return;
+          }
+          const delay = Math.min(
+            DISCORD_LOGIN_RETRY_BASE_MS * 2 ** (attempt - 1),
+            DISCORD_LOGIN_RETRY_MAX_MS,
+          );
+          logger.warn(
+            { err: err.message, attempt, retryInMs: delay },
+            'Discord login failed, retrying',
+          );
+          if (attempt >= DISCORD_LOGIN_BLOCKING_ATTEMPTS && !settled) {
+            logger.error(
+              { attempt },
+              'Discord still not connected; continuing startup, retrying in background',
+            );
+            settle();
+          }
+          this.loginRetryTimer = setTimeout(
+            () => attemptLogin(attempt + 1),
+            delay,
+          );
+        });
+      };
+
+      attemptLogin(1);
+    });
+  }
+
+  private createClient(): Client {
     this.client = new Client({
       intents: [
         GatewayIntentBits.Guilds,
@@ -177,21 +247,7 @@ export class DiscordChannel implements Channel {
       logger.error({ err: err.message }, 'Discord client error');
     });
 
-    return new Promise<void>((resolve) => {
-      this.client!.once(Events.ClientReady, (readyClient) => {
-        logger.info(
-          { username: readyClient.user.tag, id: readyClient.user.id },
-          'Discord bot connected',
-        );
-        console.log(`\n  Discord bot: ${readyClient.user.tag}`);
-        console.log(
-          `  Use /chatid command or check channel IDs in Discord settings\n`,
-        );
-        resolve();
-      });
-
-      this.client!.login(this.botToken);
-    });
+    return this.client;
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -235,6 +291,11 @@ export class DiscordChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    if (this.loginRetryTimer) {
+      clearTimeout(this.loginRetryTimer);
+      this.loginRetryTimer = null;
+    }
+    this.settleConnect?.();
     if (this.client) {
       this.client.destroy();
       this.client = null;
