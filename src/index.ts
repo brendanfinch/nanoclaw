@@ -66,9 +66,7 @@ export { escapeXml, formatMessages } from './router.js';
 
 /** Build a trigger regex from a group's trigger string (e.g. "@newton" → /^@newton\b/i) */
 function groupTriggerPattern(group: RegisteredGroup): RegExp {
-  const name = group.trigger
-    ? group.trigger.replace(/^@/, '')
-    : ASSISTANT_NAME;
+  const name = group.trigger ? group.trigger.replace(/^@/, '') : ASSISTANT_NAME;
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`^@${escaped}\\b`, 'i');
 }
