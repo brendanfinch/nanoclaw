@@ -64,6 +64,13 @@ import { logger } from './logger.js';
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
 
+/** Build a trigger regex from a group's trigger string (e.g. "@newton" → /^@newton\b/i) */
+function groupTriggerPattern(group: RegisteredGroup): RegExp {
+  const name = group.trigger ? group.trigger.replace(/^@/, '') : ASSISTANT_NAME;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^@${escaped}\\b`, 'i');
+}
+
 let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
@@ -172,9 +179,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     const allowlistCfg = loadSenderAllowlist();
+    const triggerRe = groupTriggerPattern(group);
     const hasTrigger = missedMessages.some(
       (m) =>
-        TRIGGER_PATTERN.test(m.content.trim()) &&
+        triggerRe.test(m.content.trim()) &&
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
@@ -394,15 +402,17 @@ async function startMessageLoop(): Promise<void> {
 
           const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+          const hasActiveContainer = queue.hasActiveContainer(chatJid);
 
-          // For non-main groups, only act on trigger messages.
-          // Non-trigger messages accumulate in DB and get pulled as
-          // context when a trigger eventually arrives.
-          if (needsTrigger) {
+          // For non-main groups, only require trigger when there's no active
+          // container. If a container is already running (conversation in
+          // progress), pipe follow-up messages through without a trigger.
+          if (needsTrigger && !hasActiveContainer) {
             const allowlistCfg = loadSenderAllowlist();
+            const triggerRe = groupTriggerPattern(group);
             const hasTrigger = groupMessages.some(
               (m) =>
-                TRIGGER_PATTERN.test(m.content.trim()) &&
+                triggerRe.test(m.content.trim()) &&
                 (m.is_from_me ||
                   isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );

@@ -154,6 +154,14 @@ export class GroupQueue {
   }
 
   /**
+   * Check if there is an active (non-task) container for the given group.
+   */
+  hasActiveContainer(groupJid: string): boolean {
+    const state = this.getGroup(groupJid);
+    return !!(state.active && state.groupFolder && !state.isTaskContainer);
+  }
+
+  /**
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.
    */

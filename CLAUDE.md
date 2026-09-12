@@ -62,3 +62,26 @@ systemctl --user restart nanoclaw
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+
+## Security Rules
+- Never read, display, or cat the contents of .env files
+- When you need environment variables, use `source .env && export VAR_NAME` without printing values
+- Never include API keys, tokens, or secrets in conversation output
+- If you need to verify a key exists, use: `grep -c VARIABLE_NAME .env` (returns count, not value)
+
+## Auto-Approval Rules for Claude Code
+
+These command types are safe to approve without prompting:
+
+**Auto-approve (read-only, no secrets):**
+- find commands
+- ls commands
+- grep on .ts, .js, .md, .json files (except .env, .mcp.json, supabase.json, authorized_keys)
+- cat on .ts, .js, .md files only
+- sqlite3 SELECT queries (read-only)
+
+**Always prompt, one-time only:**
+- Any file containing "env", "mcp.json", "supabase", "authorized_keys", "token", "password", "secret"
+- Any write, update, insert, create, or delete operation
+- Any chmod, chown, or permission change
+- Any launchctl, brew services, or system-level command

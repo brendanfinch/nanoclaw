@@ -1,0 +1,62 @@
+# NanoClaw Slack app manifest — post-only posture.
+#
+# Creates a bot that can publish messages to channels it has been invited to,
+# and nothing else. No event subscriptions, so no Slack message can reach the
+# agent. No channels:history / im:history, so it cannot read conversations.
+# No chat:write.public, so it cannot post to channels it hasn't been invited to.
+# No channels:join, so it cannot add itself anywhere.
+#
+# Usage: https://api.slack.com/apps -> Create New App -> From an app manifest
+#        -> pick workspace -> paste this YAML.
+#
+# To switch to the interactive posture later (ask the bot questions in-channel),
+# see the commented block at the bottom. Scope changes require reinstalling the
+# app, which issues a NEW bot token that must be copied into .env again.
+
+display_information:
+  name: NanoClaw
+  description: Daily K-12 science education research briefing
+  background_color: "#1f2d3d"
+
+features:
+  bot_user:
+    display_name: NanoClaw
+    # false = bot shows as away unless actively connected; purely cosmetic
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      # Publish messages to channels the bot has been invited to.
+      # This is the ONLY capability granted in the post-only posture.
+      - chat:write
+
+settings:
+  # Socket Mode keeps the connection outbound from your Mac — Slack never needs
+  # a public URL or inbound firewall rule to reach NanoClaw.
+  socket_mode_enabled: true
+  org_deploy_enabled: false
+  token_rotation_enabled: false
+  interactivity:
+    is_enabled: false
+
+# ---------------------------------------------------------------------------
+# INTERACTIVE POSTURE (optional — only if you want to @mention the bot)
+#
+# Replace the oauth_config.scopes.bot list above with:
+#
+#   - chat:write
+#   - groups:history   # read messages in PRIVATE channels it's invited to
+#   - groups:read      # resolve private channel names
+#   - users:read       # resolve display names instead of raw U... IDs
+#
+# ...and add this top-level block:
+#
+# settings:
+#   event_subscriptions:
+#     bot_events:
+#       - message.groups
+#
+# Deliberately omitted even here: channels:history / channels:read (public
+# channels), im:history (DMs), chat:write.public (posting uninvited).
+# ---------------------------------------------------------------------------

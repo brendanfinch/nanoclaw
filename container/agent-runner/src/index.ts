@@ -389,6 +389,31 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // Load per-group MCP servers from the group's .mcp.json. The SDK does not
+  // pick up project .mcp.json files on its own in headless mode (project
+  // servers need interactive approval), so pass them explicitly via the
+  // mcpServers option and allowlist their tools.
+  const projectMcpPath = '/workspace/group/.mcp.json';
+  const mcpToolPatterns: string[] = ['mcp__nanoclaw__*'];
+  const projectMcpServers: Record<string, Record<string, unknown>> = {};
+  if (fs.existsSync(projectMcpPath)) {
+    try {
+      const mcpConfig = JSON.parse(fs.readFileSync(projectMcpPath, 'utf-8'));
+      const servers = (mcpConfig.mcpServers || {}) as Record<string, Record<string, unknown>>;
+      for (const [name, cfg] of Object.entries(servers)) {
+        if (name === 'nanoclaw') continue; // reserved for the built-in IPC server
+        const normalized = { ...cfg };
+        // Claude Code .mcp.json uses "streamable-http"; the SDK calls it "http".
+        if (normalized.type === 'streamable-http') normalized.type = 'http';
+        projectMcpServers[name] = normalized;
+        mcpToolPatterns.push(`mcp__${name}__*`);
+      }
+      log(`Found ${Object.keys(projectMcpServers).length} project MCP server(s): ${Object.keys(projectMcpServers).join(', ')}`);
+    } catch (e) {
+      log(`Warning: failed to parse ${projectMcpPath}: ${e}`);
+    }
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -407,13 +432,14 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        ...mcpToolPatterns,
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
       mcpServers: {
+        ...(projectMcpServers as Record<string, any>),
         nanoclaw: {
           command: 'node',
           args: [mcpServerPath],
@@ -432,6 +458,19 @@ async function runQuery(
     messageCount++;
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
     log(`[msg #${messageCount}] type=${msgType}`);
+    if (msgType === 'system/init') {
+      // Surface MCP server connection status so failed servers are visible in the container log.
+      const init = message as { mcp_servers?: Array<{ name: string; status: string }>; tools?: string[] };
+      const servers = (init.mcp_servers || []).map((s) => `${s.name}=${s.status}`).join(', ') || 'none';
+      const mcpTools = (init.tools || []).filter((t) => t.startsWith('mcp__')).length;
+      log(`MCP servers: ${servers}; ${mcpTools} mcp tools exposed`);
+      // Also persist it in the group folder: container stderr only reaches the
+      // host log file when LOG_LEVEL=debug, and MCP servers fail silently otherwise.
+      try {
+        fs.mkdirSync('/workspace/group/logs', { recursive: true });
+        fs.appendFileSync('/workspace/group/logs/mcp-status.log', `${new Date().toISOString()} ${servers}; ${mcpTools} mcp tools\n`);
+      } catch { /* best effort */ }
+    }
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
