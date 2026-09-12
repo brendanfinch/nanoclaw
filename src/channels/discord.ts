@@ -1,4 +1,10 @@
-import { Client, Events, GatewayIntentBits, Message, TextChannel } from 'discord.js';
+import {
+  Client,
+  Events,
+  GatewayIntentBits,
+  Message,
+  TextChannel,
+} from 'discord.js';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -63,10 +69,10 @@ export class DiscordChannel implements Channel {
         chatName = senderName;
       }
 
-      // Translate Discord @bot mentions into TRIGGER_PATTERN format.
+      // Translate Discord @bot mentions into the per-group trigger format.
       // Discord mentions look like <@botUserId> — these won't match
-      // TRIGGER_PATTERN (e.g., ^@Andy\b), so we prepend the trigger
-      // when the bot is @mentioned.
+      // trigger patterns, so we prepend the group's trigger when the bot
+      // is @mentioned.
       if (this.client?.user) {
         const botId = this.client.user.id;
         const isBotMentioned =
@@ -79,27 +85,33 @@ export class DiscordChannel implements Channel {
           content = content
             .replace(new RegExp(`<@!?${botId}>`, 'g'), '')
             .trim();
-          // Prepend trigger if not already present
+          // Prepend the group-specific trigger (or fall back to global)
+          const group = this.opts.registeredGroups()[chatJid];
+          const triggerName = group?.trigger
+            ? group.trigger.replace(/^@/, '')
+            : ASSISTANT_NAME;
           if (!TRIGGER_PATTERN.test(content)) {
-            content = `@${ASSISTANT_NAME} ${content}`;
+            content = `@${triggerName} ${content}`;
           }
         }
       }
 
       // Handle attachments — store placeholders so the agent knows something was sent
       if (message.attachments.size > 0) {
-        const attachmentDescriptions = [...message.attachments.values()].map((att) => {
-          const contentType = att.contentType || '';
-          if (contentType.startsWith('image/')) {
-            return `[Image: ${att.name || 'image'}]`;
-          } else if (contentType.startsWith('video/')) {
-            return `[Video: ${att.name || 'video'}]`;
-          } else if (contentType.startsWith('audio/')) {
-            return `[Audio: ${att.name || 'audio'}]`;
-          } else {
-            return `[File: ${att.name || 'file'}]`;
-          }
-        });
+        const attachmentDescriptions = [...message.attachments.values()].map(
+          (att) => {
+            const contentType = att.contentType || '';
+            if (contentType.startsWith('image/')) {
+              return `[Image: ${att.name || 'image'}]`;
+            } else if (contentType.startsWith('video/')) {
+              return `[Video: ${att.name || 'video'}]`;
+            } else if (contentType.startsWith('audio/')) {
+              return `[Audio: ${att.name || 'audio'}]`;
+            } else {
+              return `[File: ${att.name || 'file'}]`;
+            }
+          },
+        );
         if (content) {
           content = `${content}\n${attachmentDescriptions.join('\n')}`;
         } else {
@@ -125,7 +137,13 @@ export class DiscordChannel implements Channel {
 
       // Store chat metadata for discovery
       const isGroup = message.guild !== null;
-      this.opts.onChatMetadata(chatJid, timestamp, chatName, 'discord', isGroup);
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        chatName,
+        'discord',
+        isGroup,
+      );
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];

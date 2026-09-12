@@ -389,6 +389,22 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // Load per-group MCP server names from project .mcp.json for tool allowlisting
+  const projectMcpPath = '/workspace/group/.mcp.json';
+  const mcpToolPatterns: string[] = ['mcp__nanoclaw__*'];
+  if (fs.existsSync(projectMcpPath)) {
+    try {
+      const mcpConfig = JSON.parse(fs.readFileSync(projectMcpPath, 'utf-8'));
+      const serverNames = Object.keys(mcpConfig.mcpServers || {});
+      for (const name of serverNames) {
+        mcpToolPatterns.push(`mcp__${name}__*`);
+      }
+      log(`Found ${serverNames.length} project MCP server(s): ${serverNames.join(', ')}`);
+    } catch (e) {
+      log(`Warning: failed to parse ${projectMcpPath}: ${e}`);
+    }
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -407,7 +423,7 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        ...mcpToolPatterns,
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
